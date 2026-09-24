@@ -56,6 +56,7 @@ const TOC_COMPONENT_ENTRIES: &[(&str, &str)] = &[
     ("#c-principles-grid", "C11 \u{2014} Principles Grid"),
     ("#c-cta-strip", "C12 \u{2014} CTA Strip"),
     ("#c-footer", "C13 \u{2014} Footer"),
+    ("#c-package-columns", "C14 \u{2014} Package Columns"),
 ];
 
 /// Render the design system reference page.
@@ -360,14 +361,14 @@ pub(crate) fn render() -> String {
         ds::navbar::ANATOMY_ITEMS,
     ));
 
-    // Landing-page composed components (C07–C13)
+    // Landing-page composed components (C07–C14)
     html.push_str(RULE_MT);
     html.push_str(&render_landing_components());
 
     layout::document_design_system("Design System", &html)
 }
 
-/// Render the landing-page composed components (C07–C13). Each section uses
+/// Render the landing-page composed components (C07–C14). Each section uses
 /// the two-column [`ds::section`] helper and showcases one component with
 /// representative content.
 fn render_landing_components() -> String {
@@ -620,5 +621,70 @@ fn render_landing_components() -> String {
         &footer_demo,
     ));
 
+    html.push_str(RULE_MT);
+    html.push_str(&ds::section(
+        "c-package-columns",
+        "C14",
+        "Package Columns",
+        "Three-up package highlights used below the landing hero: new releases, new packages, and popular packages. Each column is a standalone card (the landing card shell: hairline border, surface, card elevation) with a header strip carrying the mono column title, and hairline-divided rows. Rows are a fixed-height grid: a mono name and a description clamped to two lines on the left, a muted detail (version or dependents) and age (released or first indexed) on the right. Two description lines are always reserved, so rows are the same height; a missing description shows an italic \"No description\" placeholder. Empty and unavailable columns show a short note.",
+        &render_package_columns_demo(),
+    ));
+
     html
+}
+
+/// Demo content for the package-columns component (C14).
+fn render_package_columns_demo() -> String {
+    use crate::components::ds::package_columns::{self, Age, Column, ColumnRow, ColumnState};
+
+    let row =
+        |name: &str, detail: &str, description: Option<&str>, event: &str, age: &str| ColumnRow {
+            name: name.to_owned(),
+            href: Some("#".to_owned()),
+            detail: detail.to_owned(),
+            description: description.map(str::to_owned),
+            age: Some(Age {
+                datetime: "2026-01-01T00:00:00Z".to_owned(),
+                title: format!("{event} 2026-01-01"),
+                label: age.to_owned(),
+            }),
+        };
+    package_columns::render(&[
+        Column {
+            title: "New releases",
+            state: &ColumnState::Rows(vec![
+                row(
+                    "wasi:http",
+                    "0.2.4",
+                    Some("WASI standard for HTTP"),
+                    "Released",
+                    "3 days ago",
+                ),
+                row(
+                    "wasi:cli",
+                    "0.2.4",
+                    Some("Command-line entry points"),
+                    "Released",
+                    "2 weeks ago",
+                ),
+            ]),
+        },
+        Column {
+            title: "New packages",
+            state: &ColumnState::Rows(vec![
+                row(
+                    "acme:widget",
+                    "0.1.0",
+                    Some("Widgets for everyone"),
+                    "First indexed",
+                    "today",
+                ),
+                row("acme:gadget", "1.2.0", None, "First indexed", "5 days ago"),
+            ]),
+        },
+        Column {
+            title: "Popular packages",
+            state: &ColumnState::Unavailable,
+        },
+    ])
 }

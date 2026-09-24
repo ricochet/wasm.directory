@@ -16,10 +16,12 @@ crate-type = ["cdylib"]
 
 [dependencies]
 anyhow = { workspace = true }
+chrono = { workspace = true }
 axum = { version = "0.8", default-features = false, features = [
     "json",
     "query",
 ] }
+futures-concurrency = { workspace = true }
 html = { workspace = true }
 pulldown-cmark = { workspace = true }
 serde = { workspace = true }

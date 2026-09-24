@@ -1005,6 +1005,49 @@ impl Manager {
         self.store.registry_stats().await
     }
 
+    /// Get known packages ordered by when this registry first indexed them
+    /// (fresh additions), newest first, one entry per package and at most
+    /// two per publisher. Each entry carries its first-indexed time.
+    ///
+    /// Uses pagination with `offset` and `limit` parameters. The
+    /// `dependencies` field of the returned packages is left empty.
+    pub async fn list_new_known_packages(
+        &self,
+        offset: u32,
+        limit: u32,
+    ) -> anyhow::Result<Vec<wasm_meta_registry_types::NewPackage>> {
+        self.store.list_new_known_packages(offset, limit).await
+    }
+
+    /// Get the latest update of each package, newest first.
+    ///
+    /// Releases are ordered by publish time (the manifest's
+    /// `org.opencontainers.image.created` annotation, then the config blob's
+    /// `created` field), falling back to when the release was first indexed.
+    /// Packages with only their debut release
+    /// are left out, and each publisher appears at most twice.
+    ///
+    /// The `dependencies` field of the embedded packages is left empty.
+    pub async fn list_recent_releases(
+        &self,
+        limit: u32,
+    ) -> anyhow::Result<Vec<wasm_meta_registry_types::PackageRelease>> {
+        self.store.list_recent_releases(limit).await
+    }
+
+    /// Get known packages ranked by how many distinct other indexed
+    /// repositories declare them as a WIT dependency.
+    ///
+    /// Uses pagination with `offset` and `limit` parameters. The
+    /// `dependencies` field of the embedded packages is left empty.
+    pub async fn list_popular_known_packages(
+        &self,
+        offset: u32,
+        limit: u32,
+    ) -> anyhow::Result<Vec<wasm_meta_registry_types::PopularPackage>> {
+        self.store.list_popular_known_packages(offset, limit).await
+    }
+
     /// Add or update a known package entry.
     pub async fn add_known_package(
         &self,
@@ -1246,6 +1289,48 @@ impl Manager {
     async fn execute_reindex_task(&self, task: &crate::storage::FetchTask) -> anyhow::Result<()> {
         self.store
             .reindex_tag(&task.registry, &task.repository, &task.tag)
+            .await
+    }
+
+    /// List manifests whose config blob hasn't been checked for a publish
+    /// time yet, in ID order, starting after `after_id`.
+    pub async fn manifests_missing_config_created(
+        &self,
+        after_id: i64,
+        limit: u64,
+    ) -> anyhow::Result<Vec<crate::storage::PendingConfig>> {
+        self.store
+            .manifests_missing_config_created(after_id, limit)
+            .await
+    }
+
+    /// Fetch a manifest's config blob and record its `created` timestamp,
+    /// used as the release's publish time when the manifest has no
+    /// `org.opencontainers.image.created` annotation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if offline mode is enabled, or if the blob can't be
+    /// fetched or the result can't be stored.
+    pub async fn backfill_config_created(
+        &self,
+        pending: &crate::storage::PendingConfig,
+    ) -> anyhow::Result<()> {
+        if self.offline {
+            return Err(ManagerError::OfflinePull.into());
+        }
+        let reference = Reference::with_digest(
+            pending.registry.clone(),
+            pending.repository.clone(),
+            pending.config_digest.clone(),
+        );
+        let data = self
+            .client
+            .pull_config_blob(&reference, &pending.config_digest)
+            .await?;
+        let created = crate::storage::created_from_config(&data);
+        self.store
+            .set_manifest_config_created(pending.manifest_id, &created)
             .await
     }
 

@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 use tracing::{error, info, warn};
 use wasm_package_manager::Reference;
 use wasm_package_manager::manager::{Manager, ManagerError, TaskOutcome};
-use wasm_package_manager::storage::IndexerLease;
+use wasm_package_manager::storage::{IndexerLease, PendingConfig};
 
 use crate::config::{Config, PackageSource};
 
@@ -112,6 +112,7 @@ impl Indexer {
         }
         self.discover().await;
         self.process_queue().await;
+        self.backfill_config_created().await;
     }
 
     /// Discovery phase: iterate configured packages, fetch tags from
@@ -281,6 +282,76 @@ impl Indexer {
         }
     }
 
+    /// Backfill phase: record config-blob publish times for manifests
+    /// indexed before we stored them. New pulls record them directly, so
+    /// this only has work to do after an upgrade or when earlier fetches
+    /// failed (those are retried on the next cycle).
+    ///
+    /// Stops early if this replica loses the indexer lease.
+    async fn backfill_config_created(&mut self) {
+        const BATCH: u64 = 100;
+        if !self.check_leadership().await {
+            return;
+        }
+        let mut last_lease_check = Instant::now();
+        let mut after_id = 0;
+        let mut filled = 0u64;
+        loop {
+            let batch = match self
+                .manager
+                .manifests_missing_config_created(after_id, BATCH)
+                .await
+            {
+                Ok(batch) => batch,
+                Err(e) => {
+                    error!(error = %e, "Failed to list manifests missing config times");
+                    break;
+                }
+            };
+            let Some(last) = batch.last() else { break };
+            after_id = last.manifest_id;
+            let (done, lease_held) = self
+                .backfill_config_batch(&batch, &mut last_lease_check)
+                .await;
+            filled += done;
+            if !lease_held {
+                warn!("Stopping config backfill early: indexer lease lost");
+                break;
+            }
+        }
+        if filled > 0 {
+            info!(filled, "Backfilled config publish times");
+        }
+    }
+
+    /// Fetch and record config publish times for one batch, pausing
+    /// between fetches. Returns how many succeeded, and whether the indexer
+    /// lease is still held (the batch stops early once it is lost).
+    async fn backfill_config_batch(
+        &mut self,
+        batch: &[PendingConfig],
+        last_lease_check: &mut Instant,
+    ) -> (u64, bool) {
+        let mut filled = 0;
+        for pending in batch {
+            if !self.lease_still_held(last_lease_check).await {
+                return (filled, false);
+            }
+            match self.manager.backfill_config_created(pending).await {
+                Ok(()) => filled += 1,
+                Err(e) => warn!(
+                    registry = %pending.registry,
+                    repository = %pending.repository,
+                    digest = %pending.config_digest,
+                    error = %e,
+                    "Failed to fetch config blob"
+                ),
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+        (filled, true)
+    }
+
     /// Run the indexer in a loop, syncing at the configured interval.
     ///
     /// Only the replica holding the indexer lease does any work. Discovery
@@ -301,6 +372,11 @@ impl Indexer {
                 self.discover().await;
             }
             self.process_queue().await;
+            // Backfill alongside discovery so manifests whose config blob
+            // fails to fetch are retried once per interval, not every wake-up.
+            if until_due.is_zero() {
+                self.backfill_config_created().await;
+            }
             let next = if until_due.is_zero() {
                 interval
             } else {
